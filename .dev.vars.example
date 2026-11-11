@@ -1,0 +1,18 @@
+# Local development only. Copy to .dev.vars
+# On Cloudflare, configure these through Worker Settings > Variables and Secrets.
+STRIPE_SECRET_KEY=sk_test_REPLACE_ME
+POS_PASSWORD=choose-a-long-unique-password
+SESSION_SECRET=replace-with-at-least-32-random-characters
+
+# JSON array of the readers staff can choose at checkout.
+# Use the reader IDs from the same Stripe account/mode as STRIPE_SECRET_KEY.
+POS_READERS=[{"id": "tmr_REPLACE_ME_1", "label": "Front Desk"}, {"id": "tmr_REPLACE_ME_2", "label": "Office"}]
+POS_CURRENCY=cad
+
+# Optional Stripe Tax configuration (replace placeholders; leave disabled until ready)
+POS_TAX_ENABLED=false
+POS_TAX_ADDRESS={"line1": "123 Avenue Rd.", "city": "Toronto", "state": "ON", "postal_code": "A1B 2C3", "country": "CA"}
+POS_TAX_ADDRESS_SOURCE=shipping
+
+# Add this only when testing webhook delivery
+STRIPE_WEBHOOK_SECRET=whsec_REPLACE_ME
