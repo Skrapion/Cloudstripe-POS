@@ -10,22 +10,26 @@ This is a "serverless" app meant to be installed on Cloudflare Workers. Cloudfla
 
 ## Requirements
 
-- Cloudflare account.
-- Node.js and npm on whatever computer you use to manage your Cloudflare account.
-- Stripe account with Terminal registered and products added to the product catalog.
-- A Stripe secret API key.
-- A Stripe [webhook](#webhooks) subscribed to the necessary events.
+- A Cloudflare account.
+- Node.js installed on a computer. (Only during installation.)
+- A Stripe account with:
+  - At least one terminal registered
+  - Products added to the product catalog.
+  - An API key.
+  - A [webhook](#webhooks).
 
 It's recommended to set up Stripe in Sandbox mode first to test the app.
 
-## Test locally
+## Step 1: Create local test installation
+
+Once you have Node.js installed and Cloudstripe extracted to any folder, open your command line an run:
 
 ```bash
 npm install
 cp .dev.vars.example .dev.vars
 ```
 
-Edit `.dev.vars` with your settings. See [Variables](#variables) for more details. Then:
+This will install the prerequisites and create a `.dev.vars` file that you can edit with a text edit to populate your settings. See [Variables](#variables) for more details. Then run:
 
 ```bash
 npx stripe login
@@ -33,24 +37,31 @@ npx stripe login
 
 Follow the instructions to log into Stripe. It's recommended to use a sandbox account when testing.
 
-Finally:
+Finally, run:
 
 ```bash
 npm run dev
 ```
 
-Open the local URL printed by Wrangler and sign in with `POS_PASSWORD`.
+This will run Cloudstripe on your local computer. Open the local URL printed by in the command line and sign in with the password you set in `POS_PASSWORD`.
 
-## Presenting test cards
-While running Cloudstripe locally, you can open another command line and run:
+## Step 2: Testing
+
+Test the app locally to make sure you have Cloudflare and Stripe configured properly.
+
+It's a good idea to test with a simulated reader. When registering a terminal reader in Stripe, you can enter the pairing code `simulated-s710` (or [a few others](https://docs.stripe.com/terminal/payments/connect-reader)) to create a simulated reader, which you can add to Cloudstripe as through it was a real terminal.
+
+You can also simulate transactions with the simulated reader. Open a second command line and navigate to the same folder, where can run:
 
 ```bash
 npx stripe post v1/test_helpers/terminal/readers/<terminal_id>/present_payment_method -d "type=card_present" -d "card_present[number]=4242424242424242"
 ```
 
-Try it with a few of [Stripe's other test card numbers](https://docs.stripe.com/terminal/references/testing).
+Whether it succeeds or fails depends on the cent value of your purchase. Purchases ending in 00 should succeed and purchases ending in 01 should fail. Stripe has [other card numbers and price codes you can test](https://docs.stripe.com/terminal/references/testing).
 
-## Deploy to Cloudflare Workers
+## Step 3. Deploy to Cloudflare Workers
+
+To deploy to Cloudflare Workers, run:
 
 ```bash
 npx wrangler login
@@ -63,7 +74,7 @@ Open the worker and configure the "Runtime Variables and Secrets" in the **Setti
 
 Cloudflare will provide a domain name for you in the form of https://cloudstripe-pos.your-id.workers.dev.
 
-## Webhooks
+## Step 4: Webhooks
 
 Cloudstripe needs webhooks registered to receive feedback from Stripe during transactions.
 
@@ -80,13 +91,22 @@ Finally, set the `Endpoint URL` to `https://your-worker-hostname/api/webhook`
 
 Stripe will give you a secret for your new endpoint in the form of `whsec_...`. Copy that secret to `STRIPE_WEBHOOK_SECRET`.
 
-## Collecting Tax
+## Step 5: Collecting Tax
 
 In the Stripe Dashboard, enable Stripe Tax and confirm that you have an active tax registration covering the address listed in `POS_TAX_ADDRESS_SOURCE`.
 
 Set the tax behavior on each Stripe Price (`exclusive` or `inclusive`), or configure an explicit `exclusive`/`inclusive` default tax behavior in Stripe Tax settings.
 
 When you're ready, set `POS_TAX_ENABLED` to `true`.
+
+## Step 6: Securing the installation
+Congratulations! You have your own POS installed and working!
+
+Currently, your POS is only secured by a password shared by your staff. Since this is located on a publicly accessible Cloudflare worker, theoretically anybody can access it.
+
+There's not a lot of real damage an attacker can do. They could waste all your Cloudflare credits by trying to guess your password, and if they *do* guess your password, they could cause a nuisance by waking up your terminals with bogus transactions. The only thing Cloudstripe can do is collect money to your Stripe account, so there's not a lot to gain from attacking your installation.
+
+That said, it is recommended to set up Cloudflare Zero Trust and run the app through the Cloudflare One Client in order to lock down Cloudstripe to only work on your devices.
 
 ## Variables
 Variables can be set in .dev.vars when running locally with npm, or in the Cloudflare environment variables found in **Settings → Variables and Secrets**.
@@ -102,12 +122,3 @@ Variables can be set in .dev.vars when running locally with npm, or in the Cloud
 | `POS_TAX_ENABLED` | `true` | | Set to true in order to collect tax. You'll need to set up taxation properly on your products in the Stripe Dashboard. |
 | `POS_TAX_ADDRESS` | `{`<br>`  "line1": "123 Avenue Rd.",`<br>`  "city": "Toronto",`<br>`  "state": "ON",`<br>`  "postal_code": "A1B 2C3",`<br>`  "country": "CA"`<br>`}` | | The address of your store, used to pull the correct tax rate from Stripe.<br>This is technically supposed to be the customer's address, but Cloudstripe doesn't collect customer addresses, so your store address is used as the shipping address. |
 | `POS_TAX_ADDRESS_SOURCE` | `shipping` | | This can be `billing` or `shipping` to signify whether the address above is the customer's billing address or the address you're shipping the product to. Assuming you're using your store's address, `shipping` is the better choice. |
-
-## Securing the installation
-Congratulations! You have your own POS installed and working!
-
-Currently, your POS is only secured by a password shared by your staff. Since this is located on a publicly accessible Cloudflare worker, theoretically anybody can access it.
-
-There's not a lot of real damage an attacker can do. They could waste all your Cloudflare credits by trying to guess your password, and if they *do* guess your password, they could cause a nuisance by waking up your terminals with bogus transactions. The only thing Cloudstripe can do is collect money to your Stripe account, so there's not a lot to gain from attacking your installation.
-
-That said, it is recommended to set up Cloudflare Zero Trust and run the app through the Cloudflare One Client in order to lock down Cloudstripe to only work on your devices.
