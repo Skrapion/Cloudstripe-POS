@@ -29,7 +29,7 @@ npm install
 cp .dev.vars.example .dev.vars
 ```
 
-This will install the prerequisites and create a `.dev.vars` file that you can edit with a text edit to populate your settings. See [Variables](#variables) for more details. Then run:
+This will install the prerequisites and create a `.dev.vars` file that you can edit with a text editor to populate your settings. See [Variables](#variables) for more details. Then run:
 
 ```bash
 npx stripe login
