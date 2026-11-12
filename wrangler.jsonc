@@ -8,5 +8,19 @@
 		"directory": "./public",
 		"binding": "ASSETS",
 		"run_worker_first": true
+	},
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "PAYMENT_UPDATES",
+				"class_name": "PaymentUpdates"
+			}
+		]
+	},
+	"exports": {
+		"PaymentUpdates": {
+			"type": "durable-object",
+			"storage": "sqlite"
+		}
 	}
 }

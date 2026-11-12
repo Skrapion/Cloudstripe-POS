@@ -19,8 +19,9 @@ const state = {
     selectedReaderId: null, 
     reader: null, 
     paymentIntentId: null, 
-    pollTimer: null, 
-    polling: false 
+    paymentSocket: null,
+    reconnectTimer: null,
+    reconnectAttempts: 0
 };
 
 const formatter = () => new Intl.NumberFormat('en-US', { style: 'currency', currency: state.currency.toUpperCase() });
@@ -449,80 +450,76 @@ async function cancelCurrentPayment() {
 
     try {
         await api('/api/cancel', { method: 'POST', body: JSON.stringify({ paymentIntentId: state.paymentIntentId }) });
+        refreshPaymentStatus();
 
         $('paymentTitle').textContent = 'Cancellation requested';
         $('paymentMessage').textContent = 'Checking the final payment status…';
-        pollPayment();
+        connectPaymentSocket();
     } catch (error) {
         $('paymentMessage').textContent = error.message;
         $('cancelPaymentBtn').disabled = false;
     }
 }
 
-function pollPayment() {
-    if (state.pollTimer) {
-        clearTimeout(state.pollTimer);
+async function refreshPaymentStatus() {
+    if (!state.paymentIntentId) {
+        return;
     }
 
-    state.polling = true;
-    const tick = async () => {
-        if (!state.paymentIntentId) {
+    try {
+        const result = await api(`/api/payment/${encodeURIComponent(state.paymentIntentId)}`);
+
+        if (result.state === 'succeeded') {
+            state.polling = false;
+            $('paymentSpinner').classList.add('hidden');
+            $('paymentTitle').textContent = 'Payment approved';
+
+            const taxWarning = result.taxRecordStatus === 'failed' ? ` However, Stripe Tax could not record this sale: ${result.taxRecordMessage || 'unknown error'}. Retry tax recording before closing.` : '';
+            const taxRecorded = result.taxRecordStatus === 'recorded' ? ' The tax transaction was recorded in Stripe.' : '';
+
+            $('paymentMessage').textContent = `${money(result.amount)} was successfully paid.${taxRecorded}${taxWarning}`;
+            $('paymentActions').innerHTML = result.taxRecordStatus === 'failed' ? '<button class="secondary" id="retryTaxBtn">Retry tax recording</button><button class="primary" id="doneBtn">Done</button>' : '<button class="primary" id="doneBtn">Done</button>';
+            $('doneBtn').addEventListener('click', finishSale);
+
+            const retryTaxBtn = $('retryTaxBtn');
+
+            if (retryTaxBtn) {
+                retryTaxBtn.addEventListener('click', () => {
+                    $('paymentSpinner').classList.remove('hidden');
+                    $('paymentTitle').textContent = 'Retrying tax record';
+                    $('paymentMessage').textContent = 'Checking Stripe Tax transaction status…';
+                    refreshPaymentStatus();
+                });
+            }
+
             return;
         }
 
-        try {
-            const result = await api(`/api/payment/${encodeURIComponent(state.paymentIntentId)}`);
+        if (result.state === 'failed') {
+            state.polling = false;
+            $('paymentSpinner').classList.add('hidden');
+            $('paymentTitle').textContent = 'Payment not completed';
+            $('paymentMessage').textContent = result.failureMessage || 'The card was not accepted. You can try another card using the same payment.';
+            $('paymentActions').innerHTML = '<button class="secondary" id="retryBtn">Try another card</button><button class="secondary" id="closeBtn">Close</button>';
+            $('retryBtn').addEventListener('click', retryCurrentPayment);
+            $('closeBtn').addEventListener('click', closePayment);
 
-            if (result.state === 'succeeded') {
-                state.polling = false;
-                $('paymentSpinner').classList.add('hidden');
-                $('paymentTitle').textContent = 'Payment approved';
-
-                const taxWarning = result.taxRecordStatus === 'failed' ? ` However, Stripe Tax could not record this sale: ${result.taxRecordMessage || 'unknown error'}. Retry tax recording before closing.` : '';
-                const taxRecorded = result.taxRecordStatus === 'recorded' ? ' The tax transaction was recorded in Stripe.' : '';
-
-                $('paymentMessage').textContent = `${money(result.amount)} was successfully paid.${taxRecorded}${taxWarning}`;
-                $('paymentActions').innerHTML = result.taxRecordStatus === 'failed' ? '<button class="secondary" id="retryTaxBtn">Retry tax recording</button><button class="primary" id="doneBtn">Done</button>' : '<button class="primary" id="doneBtn">Done</button>';
-                $('doneBtn').addEventListener('click', finishSale);
-
-                const retryTaxBtn = $('retryTaxBtn');
-
-                if (retryTaxBtn) {
-                    retryTaxBtn.addEventListener('click', () => { $('paymentSpinner').classList.remove('hidden'); $('paymentTitle').textContent = 'Retrying tax record'; $('paymentMessage').textContent = 'Checking Stripe Tax transaction status…'; pollPayment(); });
-                }
-
-                return;
-            }
-
-            if (result.state === 'failed') {
-                state.polling = false;
-                $('paymentSpinner').classList.add('hidden');
-                $('paymentTitle').textContent = 'Payment not completed';
-                $('paymentMessage').textContent = result.failureMessage || 'The card was not accepted. You can try another card using the same payment.';
-                $('paymentActions').innerHTML = '<button class="secondary" id="retryBtn">Try another card</button><button class="secondary" id="closeBtn">Close</button>';
-                $('retryBtn').addEventListener('click', retryCurrentPayment);
-                $('closeBtn').addEventListener('click', closePayment);
-
-                return;
-            }
-
-            if (result.state === 'canceled' || result.readerActionStatus === 'canceled') {
-                state.polling = false;
-                $('paymentSpinner').classList.add('hidden');
-                $('paymentTitle').textContent = 'Payment canceled';
-                $('paymentMessage').textContent = 'No successful payment was reported. Close this message to return to the cart.';
-                $('paymentActions').innerHTML = '<button class="secondary" id="closeBtn">Close</button>';
-                $('closeBtn').addEventListener('click', closePayment); return;
-            }
-
-            $('paymentMessage').textContent = result.readerStatus === 'online' ? `${result.readerLabel} is waiting for the customer. Ask them to tap or insert their card.` : `The connection to ${result.readerLabel} changed. Checking payment status…`;
-        } catch (error) {
-            $('paymentMessage').textContent = `Unable to check status: ${error.message}. Do not start another payment until you verify the reader and Stripe Dashboard.`;
+            return;
         }
 
-        state.pollTimer = setTimeout(tick, 1800);
-    };
-    tick();
+        if (result.state === 'canceled' || result.readerActionStatus === 'canceled') {
+            state.polling = false;
+            $('paymentSpinner').classList.add('hidden');
+            $('paymentTitle').textContent = 'Payment canceled';
+            $('paymentMessage').textContent = 'No successful payment was reported. Close this message to return to the cart.';
+            $('paymentActions').innerHTML = '<button class="secondary" id="closeBtn">Close</button>';
+            $('closeBtn').addEventListener('click', closePayment); return;
+        }
+
+        $('paymentMessage').textContent = result.readerStatus === 'online' ? `${result.readerLabel} is waiting for the customer. Ask them to tap or insert their card.` : `The connection to ${result.readerLabel} changed. Checking payment status…`;
+    } catch (error) {
+        $('paymentMessage').textContent = `Unable to check status: ${error.message}. Do not start another payment until you verify the reader and Stripe Dashboard.`;
+    }
 }
 
 async function retryCurrentPayment() {
@@ -536,7 +533,8 @@ async function retryCurrentPayment() {
 
     try {
         await api('/api/retry', { method: 'POST', body: JSON.stringify({ paymentIntentId: state.paymentIntentId }) });
-        pollPayment();
+        refreshPaymentStatus();
+        connectPaymentSocket();
     } catch (error) {
         $('paymentSpinner').classList.add('hidden'); $('paymentMessage').textContent = error.message;
         $('paymentActions').innerHTML = '<button class="secondary" id="closeBtn">Close</button>';
@@ -545,8 +543,21 @@ async function retryCurrentPayment() {
 }
 
 function closePayment() {
+    if (state.reconnectTimer) {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = null;
+    }
+
+    if (state.paymentSocket) {
+        state.paymentSocket.close();
+        state.paymentSocket = null;
+    }
+
+    state.reconnectAttempts = 0;
+
     $('paymentModal').classList.remove('show');
     state.paymentIntentId = null;
+
     renderReaderSelect();
     renderCart();
 }
@@ -556,6 +567,75 @@ function finishSale() {
     renderCart();
     closePayment();
     refreshReaders();
+}
+
+function connectPaymentSocket() {
+    if (!state.paymentIntentId) {
+        return;
+    }
+
+    if (state.paymentSocket) {
+        state.paymentSocket.close();
+    }
+
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${protocol}//${location.host}/api/payment/` +
+        `${encodeURIComponent(state.paymentIntentId)}/ws`;
+
+    const socket = new WebSocket(url);
+    state.paymentSocket = socket;
+
+    socket.addEventListener('open', () => {
+        if (state.paymentSocket !== socket) {
+            return;
+        }
+
+        state.reconnectAttempts = 0;
+
+        // Reconcile state in case we missed an event.
+        refreshPaymentStatus();
+    });
+
+    socket.addEventListener('message', event => {
+        if (state.paymentSocket !== socket) {
+            return;
+        }
+
+        try {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'payment.updated') {
+                refreshPaymentStatus();
+            }
+        } catch (error) {
+            console.error('Invalid payment WebSocket message:', error);
+        }
+    });
+
+    socket.addEventListener('close', () => {
+        if (state.paymentSocket !== socket) {
+            return;
+        }
+        state.paymentSocket = null;
+
+        if (!state.paymentIntentId) {
+            return;
+        }
+
+        const delay = Math.min(
+            1000 * 2 ** state.reconnectAttempts++,
+            30000
+        );
+
+        state.reconnectTimer = setTimeout(
+            connectPaymentSocket,
+            delay
+        );
+    });
+
+    socket.addEventListener('error', () => {
+        socket.close();
+    });
 }
 
 ////////////////////////////////// Event listeners
@@ -643,7 +723,7 @@ $('checkoutBtn').addEventListener('click', async () => {
         }
         $('paymentMessage').textContent += `Total: ${money(result.amount)}.`;
 
-        pollPayment();
+        connectPaymentSocket();
     } catch (error) {
         $('paymentModal').classList.remove('show');
         showNotice(error.message, 'error');

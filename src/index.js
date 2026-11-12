@@ -1,3 +1,5 @@
+import { DurableObject } from "cloudflare:workers";
+
 const COOKIE_NAME = "cstripe_session";
 const SESSION_SECONDS = 16 * 60 * 60;
 const MAX_CART_LINES = 20;
@@ -68,8 +70,8 @@ async function handleApi(request, env, url) {
         case "GET session":
             return json({ authenticated: await isAuthenticated(request, env) }, 200, { "Cache-Control": "no-store" });
   
-        case "POST stripe-webhook":
-            return stripeWebhook(request, env);
+        case "POST webhook":
+            return webhook(request, env);
     }
 
     if (!(await isAuthenticated(request, env))) {
@@ -104,11 +106,97 @@ async function handleApi(request, env, url) {
             if (pathParts.length < 4) {
                 return json({ error: "Not found." }, 404);
             }
+
+            if (pathParts[4] === "ws") {
+                assertSameOrigin(request, url);
+
+                const paymentIntentId = pathParts[3];
+
+                if (!/^pi_[A-Za-z0-9]+$/.test(paymentIntentId)) {
+                    return json({ error: "Invalid payment reference." }, 400);
+                }
+
+                if (request.headers.get("Upgrade") !== "websocket") {
+                    return new Response("Expected WebSocket", { status: 426 });
+                }
+
+                const id = env.PAYMENT_UPDATES.idFromName(paymentIntentId);
+                const stub = env.PAYMENT_UPDATES.get(id);
+
+                return stub.fetch("https://payment-updates/ws", request);
+            }
+
             return paymentStatus(env, pathParts[3]);
     }
 
     return json({ error: "Not found." }, 404);
 }
+
+// A web socket to receive notifications.
+// Currently this is limited to updating the client during payment processing.
+export class PaymentUpdates extends DurableObject {
+    async fetch(request) {
+        const url = new URL(request.url);
+
+        // Internal notification from the Worker.
+        if (url.pathname === "/notify") {
+            const body = await request.json();
+
+            await this.notify({
+                type: "payment.updated",
+                paymentIntentId: body.paymentIntentId
+            });
+
+            return new Response(null, { status: 204 });
+        }
+
+        // Browser WebSocket connection.
+        if (url.pathname === "/ws") {
+            if (request.headers.get("Upgrade") !== "websocket") {
+                return new Response("Expected WebSocket", {
+                    status: 426
+                });
+            }
+
+            const pair = new WebSocketPair();
+            const [client, server] = Object.values(pair);
+
+            this.ctx.acceptWebSocket(server);
+
+            return new Response(null, {
+                status: 101,
+                webSocket: client
+            });
+        }
+
+        return new Response("Not found", { status: 404 });
+    }
+
+    async notify(message) {
+        const sockets = this.ctx.getWebSockets();
+
+        const payload = JSON.stringify(message);
+
+        for (const ws of sockets) {
+            try {
+                // With the Hibernation API the sockets returned by getWebSockets()
+                // are already accepted and should be OPEN while the connection lives.
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(payload);
+                }
+            } catch (err) {
+                console.error("Failed to send on a websocket:", err);
+                // Optionally close the bad socket
+                // ws.close(1011, "send failed");
+            }
+        }
+    }
+
+    async webSocketError(ws, error) {
+        console.error("Payment WebSocket error:", error);
+    }
+}
+
 
 async function listProducts(env) {
     requireEnv(env, ["STRIPE_SECRET_KEY"]);
@@ -593,7 +681,18 @@ async function recordTaxTransaction(env, intent) {
     }
 }
 
-async function stripeWebhook(request, env) {
+async function notifyPaymentUpdate(env, paymentIntentId) {
+    const id = env.PAYMENT_UPDATES.idFromName(paymentIntentId);
+    const stub = env.PAYMENT_UPDATES.get(id);
+
+    return stub.fetch("https://payment-updates/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paymentIntentId })
+    });
+}
+
+async function webhook(request, env) {
     requireEnv(env, ["STRIPE_WEBHOOK_SECRET", "STRIPE_SECRET_KEY"]);
     const rawBody = await request.text();
     const signature = request.headers.get("Stripe-Signature") || "";
@@ -622,15 +721,16 @@ async function stripeWebhook(request, env) {
         return json({ error: "Invalid webhook payload." }, 400);
     }
 
-    if (event.type === "payment_intent.succeeded") {
-        const intent = event.data?.object;
+    const dataObject = event.data?.object;
 
-        if (intent?.metadata?.pos_tax_calculation_id) {
-            const result = await recordTaxTransaction(env, intent);
-            if (result.status !== "recorded") {
-                return json({ error: result.message || "Unable to record Stripe Tax transaction." }, 500);
-            }
-        }
+    switch (event.type) {
+        case "terminal.reader.action_succeeded":
+            notifyPaymentUpdate(env, dataObject?.action?.process_payment_intent?.payment_intent);
+            break;
+
+        case "terminal.reader.action_failed":
+            notifyPaymentUpdate(env, dataObject?.action?.process_payment_intent?.payment_intent);
+            break;
     }
     return json({ received: true });
 }
@@ -667,8 +767,8 @@ async function paymentStatus(env, paymentIntentId) {
         amount: intent.amount,
         subtotal: Number(intent.metadata?.pos_subtotal || intent.amount),
         taxAmount: Number(intent.metadata?.pos_tax_amount || 0),
-        taxRecordStatus: taxRecord.status,
-        taxRecordMessage: taxRecord.message || null,
+        //taxRecordStatus: taxRecord.status,
+        //taxRecordMessage: taxRecord.message || null,
         currency: intent.currency,
         readerStatus: reader.status
         }, 200, { "Cache-Control": "no-store" });
@@ -729,7 +829,7 @@ async function cancelPayment(request, env) {
         method: "POST",
         body: new URLSearchParams()
     });
-
+    
     const intent = await stripe(env, `/v1/payment_intents/${encodeURIComponent(body.paymentIntentId)}`);
 
     if (intent.status === "requires_payment_method") {

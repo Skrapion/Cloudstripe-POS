@@ -4,10 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "node dev.js",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
     "wrangler": "^4.45.0"
+  },
+  "dependencies": {
+    "@stripe/cli": "^1.55.11",
+    "execa": "^10.2.1"
   }
 }
